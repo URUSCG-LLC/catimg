@@ -1,9 +1,13 @@
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 2.8)
 project(catimg)
 
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 
-# set soem options
+if (NOT MAN_OUTPUT_PATH)
+  set(MAN_OUTPUT_PATH "share/man/man1")
+endif()
+
+# set some options
 #set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Wall -Wextra -g -std=c99 -Wno-unused-result")
 #set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Wall -Wextra -Os -std=c99 -Wno-unused-result")
@@ -27,6 +31,10 @@ add_executable(
 
 install(TARGETS catimg
   RUNTIME DESTINATION bin)
+
+# man page
+install(FILES ${PROJECT_SOURCE_DIR}/man/catimg.1
+  DESTINATION ${MAN_OUTPUT_PATH})
 
 # libs
 target_link_libraries(catimg m)

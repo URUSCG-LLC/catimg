@@ -1,4 +1,5 @@
 #include "sh_image.h"
+#include "sh_utils.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include <stdlib.h>
@@ -10,42 +11,45 @@ typedef struct gif_result_t {
         struct gif_result_t *next;
 } gif_result;
 
-// stbi_xload was written by urraka and slighty modified by me (posva) to make
-// it have a channels argument. Thanks to urraka for his help with this :)
-STBIDEF unsigned char *stbi_xload(char const *filename, int *x, int *y, int *frames, int *channels)
+STBIDEF unsigned char *stbi__xload_main(stbi__context *s, int *x, int *y, int *frames, int *channels)
 {
-        FILE *f;
-        stbi__context s;
         unsigned char *result = 0;
-
-        if (!(f = stbi__fopen(filename, "rb")))
-                return stbi__errpuc("can't fopen", "Unable to open file");
-
-        stbi__start_file(&s, f);
-
-        if (stbi__gif_test(&s)) {
+        if (stbi__gif_test(s)) {
                 stbi__gif g;
                 gif_result head;
                 gif_result *prev = 0, *gr = &head;
 
+                int stride = 0;
+                unsigned char* temp = 0;
                 memset(&g, 0, sizeof(g));
                 memset(&head, 0, sizeof(head));
 
                 *frames = 0;
 
-                while ((gr->data = stbi__gif_load_next(&s, &g, channels, 4))) {
-                        if (gr->data == (unsigned char*)&s) {
+                while ((gr->data = stbi__gif_load_next(s, &g, channels, 4, 0))) {
+                        if (gr->data == (unsigned char*)s) {
                                 gr->data = 0;
                                 break;
                         }
 
                         if (prev) prev->next = gr;
-                        gr->delay = g.delay;
+                        gr->delay = g.delay / 10; // the delay has been saved as 1/1000 s in the new stb_image.h
                         prev = gr;
                         gr = (gif_result*) stbi__malloc(sizeof(gif_result));
                         memset(gr, 0, sizeof(gif_result));
                         ++(*frames);
+
+                        {
+                          stride = 4 * g.w * g.h;
+                          temp = prev->data;
+                          prev->data = (unsigned char*)stbi__malloc(stride);
+                          memcpy(prev->data, temp, stride);
+                        }
                 }
+
+                STBI_FREE(g.out);
+                STBI_FREE(g.history);
+                STBI_FREE(g.background);
 
                 if (gr != &head)
                         STBI_FREE(gr);
@@ -78,12 +82,41 @@ STBIDEF unsigned char *stbi_xload(char const *filename, int *x, int *y, int *fra
                         }
                 }
         } else {
-                result = stbi__load_main(&s, x, y, channels, 0);
+                stbi__result_info ri;
+                result = stbi__load_main(s, x, y, channels, 0, &ri, 8);
                 *frames = !!result;
         }
 
-        fclose(f);
         return result;
+}
+
+// stbi_xload was written by urraka and slighty modified by me (posva) to make
+// it have a channels argument. Thanks to urraka for his help with this :)
+STBIDEF unsigned char *stbi_xload(char const *filename, int *x, int *y, int *frames, int *channels)
+{
+        FILE *f;
+        stbi__context s;
+        unsigned char *result = 0;
+
+        if (!(f = stbi__fopen(filename, "rb")))
+                return stbi__errpuc("can't fopen", "Unable to open file");
+
+        stbi__start_file(&s, f);
+
+        result = stbi__xload_main(&s, x, y, frames, channels);
+
+        fclose(f);
+
+        return result;
+}
+
+STBIDEF unsigned char *stbi_xload_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *frames, int *channels)
+{
+        stbi__context s;
+
+        stbi__start_mem(&s, buffer, len);
+
+        return stbi__xload_main(&s, x, y, frames, channels);
 }
 
 void setPixelGray(color_t *pixel, unsigned char* ptr) {
@@ -110,12 +143,7 @@ void setPixelRGBAlpha(color_t *pixel, unsigned char* ptr) {
         pixel->a = ptr[3];
 }
 
-void img_load_from_file(image_t *img, const char* file)
-{
-        int channels, w, h, frames;
-        /*unsigned char* ptr = stbi_load(file, &w, &h, &channels, 0);*/
-        unsigned char* ptr = stbi_xload(file, &w, &h, &frames, &channels);
-
+void img_load_from_data(image_t *img, stbi_uc* ptr, int w, int h, int frames, int channels) {
         if (ptr && w && h) {
                 img->width = w;
                 /*h *= 3;*/
@@ -128,7 +156,7 @@ void img_load_from_file(image_t *img, const char* file)
                         exit(1);
                 }
 
-                if (frames > 1 && !(img->delays = malloc(sizeof(uint16_t) * (frames - 1)))) {
+                if (frames > 1 && !(img->delays = malloc(sizeof(uint16_t) * (frames)))) { // avoid buffer overflow
                         perror("malloc error\n");
                         exit(1);
                 }
@@ -166,6 +194,28 @@ void img_load_from_file(image_t *img, const char* file)
                 perror("stb_image error");
                 exit(1);
         }
+}
+
+void img_load_from_file(image_t *img, const char* file)
+{
+        int channels, w, h, frames;
+        unsigned char* ptr = stbi_xload(file, &w, &h, &frames, &channels);
+
+        img_load_from_data(img, ptr, w, h, frames, channels);
+}
+
+void img_load_from_stdin(image_t *img)
+{
+        int channels, w, h, frames;
+        unsigned char *mem;
+
+        uint32_t len = read_stdin(&mem);
+
+        unsigned char* ptr = stbi_xload_from_memory(mem, len, &w, &h, &frames, &channels);
+
+        free(mem);
+
+        img_load_from_data(img, ptr, w, h, frames, channels);
 }
 
 void img_create(image_t *img, uint32_t width, uint32_t height)
@@ -207,6 +257,9 @@ void img_convert_colors(image_t *img)
 void img_free(image_t *img)
 {
         free(img->pixels);
+        if (img->delays) {
+                free(img->delays);
+        }
 }
 
 void img_resize(image_t *img, float wsc, float hsc)
